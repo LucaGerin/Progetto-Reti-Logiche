@@ -1,0 +1,329 @@
+----------------------------------------------------------------------------------
+-- Company: Politecnico di Milano
+-- Engineers: Eleonora Giudici, Luca Gerin
+-- 
+-- Design Name:  project_reti_logiche
+-- Module Name: project_reti_logiche - Behavioral
+-- Project Name: project_reti_logiche
+-- Description: performs histogram equalization to the image.
+
+----------------------------------------------------------------------------------
+
+-- library declarations
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+
+entity project_reti_logiche is
+ Port (i_clk : in STD_LOGIC;
+       i_rst : in STD_LOGIC;  
+       i_start : in STD_LOGIC;
+       i_data : in STD_LOGIC_VECTOR (7 downto 0);
+       o_address : out STD_LOGIC_VECTOR (15 downto 0);
+       o_done : out STD_LOGIC;
+       o_en : out STD_LOGIC;
+       o_we : out STD_LOGIC;
+       o_data : out STD_LOGIC_VECTOR (7 downto 0));
+end project_reti_logiche;
+
+architecture Behavioral of project_reti_logiche is
+
+-- states of the FSM
+type state_type is (RESET,
+                    ASK_COLUMNS,
+                    WAIT_COLUMNS,
+                    SAVE_COLUMNS,
+                    ASK_LINES,
+                    WAIT_LINES,
+                    SAVE_LINES,
+                    CALCULATE_DIM,
+                    INIT_MAX_MIN,
+                    FIND_MAX_MIN,
+                    CALCULATE_SHIFT,
+                    WAIT_PIXEL,
+                    MODIFY_PIXEL,
+                    WAIT_WRITING,
+                    MOVE_ON,
+                    SET_DONE,
+                    FINALIZE
+                    );
+                        
+-- signals to handle the state commutation                    
+signal current_state, next_state : state_type;
+
+--signals to memorize quantities
+signal n_col, n_rig, next_n_col, next_n_rig : unsigned (7 downto 0);
+signal dim, next_dim: unsigned (15 downto 0); 
+signal max_pixel, min_pixel, next_max_pixel, next_min_pixel,new_pixel, next_new_pixel, shift_level, next_shift_level: unsigned (7 downto 0);
+
+-- signals to memorize RAM addresses to use
+signal address1, next_address1, address2, next_address2: std_logic_vector (15 downto 0);        
+
+                                          
+begin
+
+-- process to handle the update of the signals throughout clock cycles
+state_update: process (i_clk,i_rst)
+begin
+
+    if i_rst= '1' then 
+      --when rst is given, all signals are set to default value
+        current_state <= RESET;
+        n_col <= (others => '0');
+        n_rig <= (others => '0');
+        dim <= (others => '0');
+        max_pixel <= (others => '0');
+        min_pixel <= (others => '0');
+        shift_level <= (others => '0');      
+        address1 <= (others => '0'); 
+        address2 <= (others => '0');
+        new_pixel <= (others => '0');
+              
+    elsif rising_edge(i_clk) then
+     -- update of the signals: current_x <- next_x
+        current_state <= next_state;
+        address1 <= next_address1;
+        address2 <= next_address2;
+        n_col <= next_n_col;
+        n_rig <= next_n_rig;
+        dim <= next_dim;
+        max_pixel <= next_max_pixel;
+        min_pixel <= next_min_pixel;
+        shift_level <= next_shift_level;
+        new_pixel <= next_new_pixel;   
+                 
+    end if;
+end process;
+
+
+-- main process to implement the FSM with the main function
+main: process(i_clk,current_state)
+
+-- variables used in calculations    
+variable current_pixel, temp_pixel, delta_value, new_pixel_val: unsigned (7 downto 0) := (others => '0');
+variable help1, help2: unsigned (15 downto 0) := (others =>'0');
+
+
+begin 
+
+    next_state <= current_state;
+    next_address1 <= address1;
+    next_address2 <= address2;
+    next_n_col <= n_col;
+    next_n_rig <= n_rig;
+    next_dim <= dim;
+    next_max_pixel <= max_pixel;
+    next_min_pixel <= min_pixel;
+    next_shift_level <= shift_level;
+    next_new_pixel <= new_pixel;
+    
+    o_address <= (others => '0');
+    o_data <= (others => '0');
+    o_en <= '0';
+    o_we <= '0';
+    o_done <= '0';
+    
+    -- behaviour of the FSM in each state
+    case current_state is
+        when RESET =>
+            o_en <= '0';
+            o_we <= '0';
+            o_address <= "0000000000000000";
+            o_data <= "00000000";
+            o_done <= '0';
+            
+        if(i_start='1') then
+            next_state <= ASK_COLUMNS;
+            
+        else
+            next_state <= RESET;
+        end if;
+
+        when ASK_COLUMNS =>
+            o_en <= '1';
+            o_we <= '0'; 
+            o_address <= "0000000000000000";
+            next_state <= WAIT_COLUMNS;
+            
+        when WAIT_COLUMNS =>
+            o_en <= '1';
+            o_we <= '0'; 
+            o_address <= "0000000000000000";
+            next_state <= SAVE_COLUMNS;
+            
+        when SAVE_COLUMNS =>
+            next_n_col <= unsigned(i_data); 
+            next_state <= ASK_LINES;
+            
+        when ASK_LINES =>
+            o_en <= '1';
+            o_we <= '0';
+            o_address <= "0000000000000001";
+            next_state <= WAIT_LINES;
+            
+        when WAIT_LINES =>
+            o_en <= '1';
+            o_we <= '0'; 
+            o_address <= "0000000000000001";
+            next_state <= SAVE_LINES;
+            
+        when SAVE_LINES =>
+            next_n_rig <= unsigned(i_data);    
+            next_state <= CALCULATE_DIM;
+
+        when CALCULATE_DIM =>
+        
+            next_dim <= n_rig*n_col; 
+
+            o_en <= '1';
+            o_we <= '0';                      
+            o_address <= "0000000000000010";
+                                
+            next_state <= INIT_MAX_MIN;   
+                          
+         when INIT_MAX_MIN =>         
+            
+            if(dim = 0) then
+                --if dim=0 then the process is ended
+                next_state <= SET_DONE;
+            else
+                next_max_pixel <= (others => '0');
+                next_min_pixel <=  (others => '1');
+                
+                -- update of these signals in order to use them in the future
+                next_address1 <= "0000000000000010";    
+                next_address2 <= std_logic_vector(dim+2); 
+                                           
+                o_en <= '1';
+                o_we <= '0';     
+                o_address <= "0000000000000010"; 
+           
+                next_state <= FIND_MAX_MIN;
+            end if;  
+              
+         when FIND_MAX_MIN =>
+            
+            if(unsigned(i_data) > max_pixel)then 
+                next_max_pixel <= unsigned(i_data);
+            end if;
+               
+            if (unsigned(i_data) < min_pixel) then 
+                next_min_pixel <= unsigned(i_data);
+            end if;
+            
+            if(unsigned(address1) < dim + 1) then
+                next_address1 <= std_logic_vector(unsigned(address1)+1);
+                o_address <= std_logic_vector(unsigned(address1)+1);
+                o_en <= '1';
+                o_we <= '0';               
+                
+                next_state <= FIND_MAX_MIN;
+            else             
+                next_address1 <= "0000000000000010";
+                next_state <= CALCULATE_SHIFT;
+                
+            end if;
+            
+          when CALCULATE_SHIFT =>
+            
+            delta_value := max_pixel - min_pixel; 
+            
+            if(delta_value = 0) then
+                    next_shift_level <= to_unsigned(8,8);     
+                elsif(delta_value = 1 or delta_value = 2)then
+                    next_shift_level <= to_unsigned(7,8);               
+                elsif(delta_value >= 3 and delta_value <= 6)then
+                    next_shift_level <= to_unsigned(6,8);               
+                elsif(delta_value >= 7 and delta_value <= 14)then
+                    next_shift_level <= to_unsigned(5,8);                    
+                elsif(delta_value >= 15 and delta_value <= 30)then
+                    next_shift_level <= to_unsigned(4,8);                    
+                elsif(delta_value >= 31 and delta_value <= 62)then
+                    next_shift_level <= to_unsigned(3,8);                   
+                elsif(delta_value >= 63 and delta_value <= 126)then
+                    next_shift_level <= to_unsigned(2,8);                   
+                elsif(delta_value >= 127 and delta_value <= 254)then
+                    next_shift_level <= to_unsigned(1,8);                    
+                else  
+                    next_shift_level <= to_unsigned(0,8); -- delta=255                    
+                end if;
+                
+            o_address <= address1;
+            o_en <= '1';
+            o_we <= '0';            
+            
+            next_state <= WAIT_PIXEL;
+            
+        when WAIT_PIXEL =>
+        
+            o_address <= address1;
+            o_en <= '1';
+            o_we <= '0';            
+            
+            next_state <= MODIFY_PIXEL;
+        
+        when MODIFY_PIXEL =>
+        
+            current_pixel := unsigned(i_data);           
+            
+            help1 := "00000000" & (current_pixel - min_pixel);
+            help2 := shift_left(help1, to_integer(shift_level));
+            
+            
+            if(help2 > 255)then
+                new_pixel_val := to_unsigned(255,8);
+            else                
+                new_pixel_val := help2 (7 downto 0);
+            end if;
+            
+            next_address1 <= std_logic_vector(unsigned(address1)+1);
+            next_new_pixel <= new_pixel_val;
+            o_address <= address2;
+            o_data <= std_logic_vector(new_pixel_val);
+            o_en <= '1';
+            o_we <= '1';           
+            
+            next_state <= WAIT_WRITING;
+         
+         when WAIT_WRITING =>
+            
+            o_address <= address2;
+            o_data <= std_logic_vector(new_pixel);
+            o_en <= '1';
+            o_we <= '1';
+            
+            next_state <= MOVE_ON;
+             
+         when MOVE_ON =>   
+                                       
+            if(unsigned(address1) < dim + 2) then                              
+                o_address <= address1;
+                next_address2 <= std_logic_vector(unsigned(address2)+1);  
+                o_en <= '1';
+                o_we <= '0';
+                next_state <= WAIT_PIXEL;                  
+            else   
+                o_en <= '0';
+                o_we <= '0';            
+                next_state <= SET_DONE;
+            end if;
+            
+         when SET_DONE =>
+            o_done <= '1';
+            next_state <= FINALIZE;
+            
+         when FINALIZE =>
+            if(i_start = '1')then                 
+                o_done <= '1';
+                next_state <= FINALIZE;                           
+            else                
+                o_done <= '0';
+                next_state <= RESET;
+                
+            end if;                
+        end case;
+                                       
+    end process;  
+                 
+end Behavioral;
